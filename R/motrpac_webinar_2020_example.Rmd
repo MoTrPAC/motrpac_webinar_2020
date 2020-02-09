@@ -1,0 +1,118 @@
+---
+title: 'MoTrPAC Webinar: a simple example'
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+After downloading the data from the portal, we first load the data into our session.
+
+```{r,warning=F,message=F}
+library(data.table)
+library(ggplot2)
+# Data from the portal was downloaded and gunzipped into this location
+setwd("~/Desktop/all/")
+# load the phenotypic data
+load("./phenotype/merged/merged_dmaqc_data2019-10-13.RData")
+pheno = merged_dmaqc_data
+rownames(pheno) = as.character(pheno$viallabel)
+# read in RNA-seq data from gastrocnemius
+rnaseq_d = fread("./rna-seq/sinai/batch_1/summary/rsem_genes_fpkm.txt",header=T)
+# read in the protein abundance data
+prot_d = fread("./proteomics/T55_gastrocnemius/prot_pr/mtrpac_t55_prot_pr_ratio_results.txt",
+               header=T)
+# look at the rnaseq's tissues
+rnaseq_d_vials = colnames(rnaseq_d)[-1]
+rnaseq_tissues = pheno[rnaseq_d_vials,
+            "specimen.processing.sampletypedescription"]
+print(table(rnaseq_tissues))
+# sanity check: all prot data vials should be gastrocnemius
+prot_d_vials = colnames(prot_d)[-c(1:2)]
+print(
+  table(pheno[prot_d_vials,
+            "specimen.processing.sampletypedescription"])
+)
+```
+
+We now match the samples from the two datasets:
+
+```{r,warning=F,message=F}
+# Get pid-based matched data tables
+# 1. gastroc rnaseq data
+rnaseq_gastroc_vials = rnaseq_d_vials[grepl("Gastroc",rnaseq_tissues)]
+rnaseq_gastroc_pid = as.character(pheno[rnaseq_gastroc_vials,"pid"])
+rnaseq_gastroc_d = data.frame(rnaseq_d[,..rnaseq_gastroc_vials])
+rownames(rnaseq_gastroc_d) = rnaseq_d$gene_id
+colnames(rnaseq_gastroc_d) = rnaseq_gastroc_pid
+# 2. proteomics: map to pid
+prot_d_pid = as.character(pheno[prot_d_vials,"pid"])
+prot_gastroc_d = data.frame(prot_d[,..prot_d_vials])
+rownames(prot_gastroc_d) = prot_d$protein_id
+colnames(prot_gastroc_d) = prot_d_pid
+# 3. shared pids
+# have a mapping from pid to vial for geting phenotypes later
+pid2vial = rnaseq_gastroc_vials;names(pid2vial) = rnaseq_gastroc_pid
+# intersect and match the datasets
+shared_pids = intersect(prot_d_pid,rnaseq_gastroc_pid)
+rnaseq_gastroc_d = log2(rnaseq_gastroc_d[,shared_pids]+1)
+prot_gastroc_d = prot_gastroc_d[,shared_pids]
+```
+
+Load tools for mapping molecule ids.
+
+```{r,warning=F,message=F}
+library("org.Rn.eg.db")
+ensembl2entrez = as.list(org.Rn.egENSEMBL2EG)
+entrez2ensembl = as.list(org.Rn.egENSEMBL)
+refseq2entrez = as.list(org.Rn.egREFSEQ2EG)
+entrez2symbol  = as.list(org.Rn.egSYMBOL)
+```
+
+We can now look at a signle gene: Bdh1.
+
+```{r}
+ensembl_id = "ENSRNOG00000001736"
+prot_id = "NP_446447.2"
+x1 = as.numeric(rnaseq_gastroc_d[ensembl_id,] )
+x2 = as.numeric(prot_gastroc_d[prot_id,] )
+tp = pheno[pid2vial[colnames(rnaseq_gastroc_d)],"animal.key.anirandgroup"]
+tp = factor(tp,levels = c(
+  "Control - IPE","Exercise - IPE","Exercise - 1 hr",
+  "Exercise - 4 hr","Exercise - 24 hr"
+))
+df = data.frame(
+  rnaseq = x1, protein = x2, group = tp
+)
+
+# A simple 2d plot
+ggplot(df, aes(x=rnaseq, y=protein, color=tp)) + geom_point()
+
+# Boxplot by the study arms
+par(mar=c(7,5,1,1),mfrow = c(1,2))
+boxplot(rnaseq~tp,data=df,las=2,xlab="", ylab = "log2 FPKM")
+boxplot(protein~tp,data=df,las=2,xlab = "", ylab = "ratio vs. ref")
+
+```
+
+```{r,warning=F,message=F,eval=F}
+# # Not run
+# for (prot_id in rownames(prot_gastroc_d)){
+#   prot_id_cleaned = gsub("\\.\\d","",prot_id)
+#   ent_id = refseq2entrez[[prot_id_cleaned]]
+#   if(is.null(ent_id) || is.na(ent_id)){next}
+#   ensembl_id = entrez2ensembl[[ent_id]]
+#   if(is.null(ensembl_id) || is.na(ensembl_id)){next}
+#   gene_symbol  = entrez2symbol[[ent_id]]
+#   x1 = rnaseq_gastroc_d[ensembl_id[1],] # take first index
+#   x2 = prot_gastroc_d[prot_id[1],] # take first index
+#   non_nas = !is.na(x1) & !is.na(x2)
+#   if(sd(x1[non_nas])==0 || sd(x2[non_nas])==0){next}
+#   rho = cor(x1[non_nas],x2[non_nas],method="spearman")
+#   if(rho > 0.5){
+#     print(paste(prot_id,ent_id,ensembl_id,gene_symbol),sep=",")
+#     print(rho)
+#   }
+# }
+```
